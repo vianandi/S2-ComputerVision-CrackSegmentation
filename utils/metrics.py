@@ -30,21 +30,28 @@ def batch_confusion_counts(pred, target):
     tp = (pred * target).sum()
     fp = (pred * (1.0 - target)).sum()
     fn = ((1.0 - pred) * target).sum()
+    tn = ((1.0 - pred) * (1.0 - target)).sum()
 
-    return tp, fp, fn
+    return tp, fp, fn, tn
 
 
-def compute_segmentation_metrics(tp, fp, fn, smooth=1e-6):
+def compute_segmentation_metrics(tp, fp, fn, tn=None, smooth=1e-6):
     dice = (2.0 * tp + smooth) / (2.0 * tp + fp + fn + smooth)
     iou = (tp + smooth) / (tp + fp + fn + smooth)
     precision = (tp + smooth) / (tp + fp + smooth)
     recall = (tp + smooth) / (tp + fn + smooth)
     f1 = (2.0 * precision * recall + smooth) / (precision + recall + smooth)
+    accuracy = None
+    if tn is not None:
+        accuracy = (tp + tn + smooth) / (tp + fp + fn + tn + smooth)
 
-    return {
+    metrics = {
         "dice": float(dice.item()),
         "iou": float(iou.item()),
         "precision": float(precision.item()),
         "recall": float(recall.item()),
         "f1": float(f1.item()),
     }
+    if accuracy is not None:
+        metrics["accuracy"] = float(accuracy.item())
+    return metrics

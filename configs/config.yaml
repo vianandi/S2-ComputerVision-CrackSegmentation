@@ -9,6 +9,9 @@ dataset:
   - name: crack500
     image_dir: dataset/crack500/Images
     mask_dir: dataset/crack500/Masks
+  - name: crackforest
+    image_dir: dataset/crackforest/Images
+    mask_dir: dataset/crackforest/Masks
 
 image_size: 384
 train_split: 0.7
@@ -78,24 +81,30 @@ model:
 # ==============================
 ablation:
   experiments:
-    - id: baseline_unet_bce
-      name: Baseline U-Net + BCE
+    - id: unet
+      name: U-Net
       model_name: unet
-      loss_name: bce
-    - id: unet_dbce
-      name: U-Net + DBCE
-      model_name: unet
-      loss_name: dbce
-      alpha: 0.6
-    - id: proposed_bce
-      name: Proposed Model + BCE
+      loss_name: focal_tversky_boundary
+    - id: unet_residual
+      name: U-Net + Residual
+      model_name: residual_unet
+      loss_name: focal_tversky_boundary
+    - id: unet_residual_attention
+      name: U-Net + Residual + Attention
+      model_name: residual_attention_unet
+      loss_name: focal_tversky_boundary
+    - id: proposed
+      name: U-Net + Residual + Attention + ASPP (Proposed)
       model_name: dual_attention_residual_unet
-      loss_name: bce
-    - id: proposed_dbce
-      name: Proposed Model + DBCE
-      model_name: dual_attention_residual_unet
-      loss_name: dbce
-      alpha: 0.6
+      loss_name: focal_tversky_boundary
+
+# ==============================
+# Visualization Configuration
+# ==============================
+visualization:
+  threshold: 0.5
+  num_samples: 3
+  thin_crack_candidates: 120
 
 # ==============================
 # System Configuration

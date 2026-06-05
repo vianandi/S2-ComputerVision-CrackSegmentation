@@ -99,10 +99,14 @@ class DualAttentionResidualUNet(nn.Module):
         aspp_use_global_pool=True,
         aspp_use_strip_pool=False,
         aspp_dropout=0.5,
+        use_attention=True,
+        use_aspp=True,
     ):
         super().__init__()
         self.deep_supervision = deep_supervision
         self.edge_supervision = edge_supervision
+        self.use_attention = use_attention
+        self.use_aspp = use_aspp
         
         # Initial convolution
         self.input_conv = nn.Sequential(
@@ -112,52 +116,55 @@ class DualAttentionResidualUNet(nn.Module):
         )
         
         # Encoder
-        self.enc1 = EncoderBlock(base_channels, base_channels, use_attention=True)
-        self.enc2 = EncoderBlock(base_channels, base_channels * 2, use_attention=True)
-        self.enc3 = EncoderBlock(base_channels * 2, base_channels * 4, use_attention=True)
-        self.enc4 = EncoderBlock(base_channels * 4, base_channels * 8, use_attention=True)
+        self.enc1 = EncoderBlock(base_channels, base_channels, use_attention=use_attention)
+        self.enc2 = EncoderBlock(base_channels, base_channels * 2, use_attention=use_attention)
+        self.enc3 = EncoderBlock(base_channels * 2, base_channels * 4, use_attention=use_attention)
+        self.enc4 = EncoderBlock(base_channels * 4, base_channels * 8, use_attention=use_attention)
         
         # Bottleneck with ASPP
-        self.bottleneck = nn.Sequential(
-            ResidualBlock(base_channels * 8, base_channels * 8),
-            ASPP(
-                base_channels * 8,
-                base_channels * 8,
-                dilations=aspp_dilations,
-                use_global_pool=aspp_use_global_pool,
-                use_strip_pool=aspp_use_strip_pool,
-                drop_rate=aspp_dropout,
-            ),
-            DualAttention(base_channels * 8)
-        )
+        bottleneck_layers = [ResidualBlock(base_channels * 8, base_channels * 8)]
+        if use_aspp:
+            bottleneck_layers.append(
+                ASPP(
+                    base_channels * 8,
+                    base_channels * 8,
+                    dilations=aspp_dilations,
+                    use_global_pool=aspp_use_global_pool,
+                    use_strip_pool=aspp_use_strip_pool,
+                    drop_rate=aspp_dropout,
+                )
+            )
+        if use_attention:
+            bottleneck_layers.append(DualAttention(base_channels * 8))
+        self.bottleneck = nn.Sequential(*bottleneck_layers)
         
         # Decoder
         self.dec4 = DecoderBlock(
             base_channels * 8,
             base_channels * 8,
             base_channels * 4,
-            use_attention=True,
+            use_attention=use_attention,
             skip_attention=skip_attention,
         )
         self.dec3 = DecoderBlock(
             base_channels * 4,
             base_channels * 4,
             base_channels * 2,
-            use_attention=True,
+            use_attention=use_attention,
             skip_attention=skip_attention,
         )
         self.dec2 = DecoderBlock(
             base_channels * 2,
             base_channels * 2,
             base_channels,
-            use_attention=True,
+            use_attention=use_attention,
             skip_attention=skip_attention,
         )
         self.dec1 = DecoderBlock(
             base_channels,
             base_channels,
             base_channels,
-            use_attention=True,
+            use_attention=use_attention,
             skip_attention=skip_attention,
         )
         

@@ -4,17 +4,16 @@ import os
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import numpy as np
-import matplotlib.pyplot as plt
 
 from datasets.crack_dataset import load_multiple_datasets
 from models.model_factory import build_model
 from losses.loss_factory import build_loss
 from utils.train import train_one_epoch
 from utils.validate import validate
-from utils.tta import test_time_augmentation
 from utils.seed import set_seed, seed_worker
 from utils.output_dir import resolve_output_dir
-from utils.model_output import extract_logits
+from utils.reporting import plot_history, save_history
+from utils.visualize import find_thin_crack_indices, save_paper_style_prediction_grid
 
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -207,13 +206,13 @@ print("Testing DataLoader...")
 try:
     # Test loading first batch
     test_batch = next(iter(train_loader))
-    print(f"✓ First batch loaded successfully")
+    print(f"OK First batch loaded successfully")
     print(f"  Batch size: {test_batch[0].shape[0]}")
     print(f"  Image shape: {test_batch[0].shape}")
     print(f"  Mask shape: {test_batch[1].shape}")
     print()
 except Exception as e:
-    print(f"✗ Error loading batch: {e}")
+    print(f"ERROR Error loading batch: {e}")
     import traceback
     traceback.print_exc()
     exit(1)
@@ -224,6 +223,8 @@ except Exception as e:
 print("="*50)
 print("Starting Training")
 print("="*50)
+
+history = []
 
 for epoch in range(cfg['training']['epochs']):
     print(f"\nEpoch [{epoch+1}/{cfg['training']['epochs']}]")
@@ -239,9 +240,11 @@ for epoch in range(cfg['training']['epochs']):
         val_loader,
         DEVICE,
         thresholds=cfg.get("validation", {}).get("thresholds"),
+        criterion=criterion,
     )
     val_dice = val_metrics['dice']
     val_iou = val_metrics['iou']
+    val_loss = val_metrics.get('loss')
 
     if epoch == 0:
         print("Experiment started")
@@ -258,6 +261,8 @@ for epoch in range(cfg['training']['epochs']):
     print(
         f"Epoch [{epoch+1}/{cfg['training']['epochs']}] | "
         f"Train Loss: {train_loss:.4f} | "
+        f"Val Loss: {val_loss:.4f} | "
+        f"Val Acc: {val_metrics['accuracy']:.4f} | "
         f"Val Dice: {val_dice:.4f} | "
         f"Val IoU: {val_iou:.4f} | "
         f"P: {val_metrics['precision']:.4f} | "
@@ -266,6 +271,19 @@ for epoch in range(cfg['training']['epochs']):
         f"LR: {current_lr:.2e}"
         f"{stability}"
     )
+
+    history.append({
+        "epoch": epoch + 1,
+        "train_loss": float(train_loss),
+        "val_loss": float(val_loss) if val_loss is not None else None,
+        "val_accuracy": float(val_metrics["accuracy"]),
+        "val_dice": float(val_dice),
+        "val_iou": float(val_iou),
+        "val_precision": float(val_metrics["precision"]),
+        "val_recall": float(val_metrics["recall"]),
+        "val_f1": float(val_metrics["f1"]),
+        "learning_rate": float(current_lr),
+    })
     
     # Model checkpointing - save best model
     if val_dice > best_dice + early_stopping_min_delta:
@@ -279,6 +297,8 @@ for epoch in range(cfg['training']['epochs']):
             'scheduler_state_dict': scheduler.state_dict(),
             'val_dice': val_dice,
             'val_iou': val_iou,
+            'val_loss': val_loss,
+            'val_accuracy': val_metrics['accuracy'],
             'val_precision': val_metrics['precision'],
             'val_recall': val_metrics['recall'],
             'val_f1': val_metrics['f1'],
@@ -287,9 +307,10 @@ for epoch in range(cfg['training']['epochs']):
             'loss_name': loss_info['name'],
             'loss_alpha': loss_info['alpha'],
             'experiment_name': experiment_name,
+            'history': history,
         }, checkpoint_path)
         
-        print(f"  ✓ New best model saved! (Dice: {best_dice:.4f})")
+        print(f"  OK New best model saved! (Dice: {best_dice:.4f})")
     else:
         patience_counter += 1
         print(f"  No improvement for {patience_counter} epoch(s)")
@@ -306,10 +327,18 @@ print(f"Best Val Dice: {best_dice:.4f}")
 print(f"Best model saved at: {checkpoint_path}")
 print(f"{'='*60}\n")
 
+history_csv, history_yaml = save_history(history, output_dir)
+history_plot = plot_history(history, output_dir)
+print(f"Training history saved: {history_csv}")
+print(f"Training history YAML saved: {history_yaml}")
+print(f"Training curves saved: {history_plot}")
+
 # Load best model for visualization
 checkpoint = torch.load(checkpoint_path)
 model.load_state_dict(checkpoint['model_state_dict'])
 print(f"Loaded best model from epoch {checkpoint['epoch']}")
+print(f"  Val Loss: {checkpoint.get('val_loss', 0.0):.4f}")
+print(f"  Val Accuracy: {checkpoint.get('val_accuracy', 0.0):.4f}")
 print(f"  Val Dice: {checkpoint['val_dice']:.4f}")
 print(f"  Val IoU: {checkpoint['val_iou']:.4f}")
 print(f"  Val Precision: {checkpoint.get('val_precision', 0.0):.4f}")
@@ -322,150 +351,21 @@ if skip_visualization:
     raise SystemExit(0)
 
 # =====================
-# Enhanced Visualization - Show ALL Detections
+# Paper-style result image
 # =====================
-print("\nGenerating enhanced visualization (all cracks visible)...")
-
-model.eval()
-image, mask = val_dataset[0]
-image_tensor = image.unsqueeze(0).to(DEVICE)
-
-# Get predictions
-with torch.no_grad():
-    logits = extract_logits(model(image_tensor))
-    prob = torch.sigmoid(logits)
-
-# TTA prediction
-tta_prob = test_time_augmentation(model, image_tensor, DEVICE, num_augmentations=4)
-
-# Convert to numpy
-image_np = image.permute(1, 2, 0).cpu().numpy()
-mask_np = mask.squeeze().cpu().numpy()
-prob_np = prob.squeeze().cpu().numpy()
-tta_prob_np = tta_prob.squeeze().cpu().numpy()
-
-# Multiple thresholds to show thin cracks
-pred_05 = (prob_np > 0.5).astype(np.float32)
-pred_03 = (prob_np > 0.3).astype(np.float32)  # Better for thin cracks
-pred_01 = (prob_np > 0.1).astype(np.float32)  # Maximum sensitivity
-
-# =====================
-# Figure 1: Comprehensive View (8 panels)
-# =====================
-fig = plt.figure(figsize=(24, 12))
-
-plt.subplot(2, 4, 1)
-plt.imshow(image_np)
-plt.title("Input Image", fontsize=14, fontweight='bold')
-plt.axis("off")
-
-plt.subplot(2, 4, 2)
-plt.imshow(mask_np, cmap="gray")
-plt.title("Ground Truth", fontsize=14, fontweight='bold')
-plt.axis("off")
-
-plt.subplot(2, 4, 3)
-plt.imshow(prob_np, cmap="hot", vmin=0, vmax=1)
-plt.title("Probability Map\n(brighter = higher confidence)", fontsize=14, fontweight='bold')
-cb = plt.colorbar(fraction=0.046, pad=0.04)
-cb.set_label('Probability', fontsize=12)
-plt.axis("off")
-
-plt.subplot(2, 4, 4)
-plt.imshow(pred_05, cmap="gray")
-plt.title("Prediction (threshold=0.5)\nStandard", fontsize=14, fontweight='bold')
-plt.axis("off")
-
-plt.subplot(2, 4, 5)
-plt.imshow(pred_03, cmap="gray")
-plt.title("Prediction (threshold=0.3)\n✓ Better for thin cracks", fontsize=14, fontweight='bold', color='green')
-plt.axis("off")
-
-plt.subplot(2, 4, 6)
-plt.imshow(pred_01, cmap="gray")
-plt.title("Prediction (threshold=0.1)\nMaximum sensitivity", fontsize=14, fontweight='bold')
-plt.axis("off")
-
-plt.subplot(2, 4, 7)
-plt.imshow(tta_prob_np, cmap="hot", vmin=0, vmax=1)
-plt.title("TTA Probability (4x aug)\nSmoothed predictions", fontsize=14, fontweight='bold')
-cb = plt.colorbar(fraction=0.046, pad=0.04)
-cb.set_label('Probability', fontsize=12)
-plt.axis("off")
-
-plt.subplot(2, 4, 8)
-tta_pred = (tta_prob_np > 0.5).astype(np.float32)
-plt.imshow(tta_pred, cmap="gray")
-plt.title("TTA Prediction (threshold=0.5)", fontsize=14, fontweight='bold')
-plt.axis("off")
-
-plt.suptitle(f"Comprehensive Crack Detection | Dice: {checkpoint['val_dice']:.4f} | IoU: {checkpoint['val_iou']:.4f}\nAll cracks detected - thin cracks visible at lower thresholds", 
-             fontsize=16, fontweight='bold', y=0.98)
-
-plt.tight_layout(rect=[0, 0, 1, 0.96])
-comprehensive_output = os.path.join(output_dir, 'comprehensive_detection.png')
-plt.savefig(comprehensive_output, dpi=200, bbox_inches='tight')
-print(f"✓ Comprehensive results saved: {comprehensive_output}")
-plt.close()
-
-# =====================
-# Figure 2: Zoomed Views of Thin Cracks
-# =====================
-fig, axes = plt.subplots(2, 4, figsize=(20, 10))
-
-# Top-right corner (diagonal crack)
-r1, r2, c1, c2 = 0, 170, 341, 512
-
-axes[0, 0].imshow(image_np[r1:r2, c1:c2])
-axes[0, 0].set_title("Top-Right Corner\n(Diagonal Crack)", fontsize=12, fontweight='bold')
-axes[0, 0].axis("off")
-
-axes[0, 1].imshow(mask_np[r1:r2, c1:c2], cmap="gray")
-axes[0, 1].set_title("Ground Truth", fontsize=12, fontweight='bold')
-axes[0, 1].axis("off")
-
-axes[0, 2].imshow(prob_np[r1:r2, c1:c2], cmap="hot", vmin=0, vmax=1)
-axes[0, 2].set_title(f"Probability\nmax={prob_np[r1:r2, c1:c2].max():.3f}", fontsize=12, fontweight='bold')
-axes[0, 2].axis("off")
-
-axes[0, 3].imshow(pred_03[r1:r2, c1:c2], cmap="gray")
-axes[0, 3].set_title("Detection (thr=0.3)\n✓ Thin crack visible", fontsize=12, fontweight='bold', color='green')
-axes[0, 3].axis("off")
-
-# Bottom-left area
-r1, r2, c1, c2 = 342, 512, 0, 171
-
-axes[1, 0].imshow(image_np[r1:r2, c1:c2])
-axes[1, 0].set_title("Bottom-Left\n(Main Crack)", fontsize=12, fontweight='bold')
-axes[1, 0].axis("off")
-
-axes[1, 1].imshow(mask_np[r1:r2, c1:c2], cmap="gray")
-axes[1, 1].set_title("Ground Truth", fontsize=12, fontweight='bold')
-axes[1, 1].axis("off")
-
-axes[1, 2].imshow(prob_np[r1:r2, c1:c2], cmap="hot", vmin=0, vmax=1)
-axes[1, 2].set_title(f"Probability\nmax={prob_np[r1:r2, c1:c2].max():.3f}", fontsize=12, fontweight='bold')
-axes[1, 2].axis("off")
-
-axes[1, 3].imshow(pred_03[r1:r2, c1:c2], cmap="gray")
-axes[1, 3].set_title("Detection (thr=0.3)\n✓ Full coverage", fontsize=12, fontweight='bold', color='green')
-axes[1, 3].axis("off")
-
-plt.suptitle("Zoomed View: Thin Crack Detection Details\nModel successfully detects all cracks including diagonal thin crack", 
-             fontsize=16, fontweight='bold')
-plt.tight_layout(rect=[0, 0, 1, 0.96])
-zoomed_output = os.path.join(output_dir, 'zoomed_detection.png')
-plt.savefig(zoomed_output, dpi=200, bbox_inches='tight')
-print(f"✓ Zoomed view saved: {zoomed_output}")
-plt.close()
-
-print("\n" + "="*70)
-print("✓ VISUALIZATION COMPLETE")
-print("="*70)
-print(f"Model successfully detects ALL cracks including thin diagonal crack!")
-print(f"\nResults:")
-print(f"  1. {comprehensive_output} - Full comparison (8 views)")
-print(f"  2. {zoomed_output} - Detailed zoomed views")
-print(f"\nNote: Thin cracks are best visible at threshold=0.3")
-print(f"      Model confidence at thin crack: 88% (excellent!)")
-print("="*70)
+print("\nGenerating paper-style prediction grid...")
+thin_indices = find_thin_crack_indices(
+    val_dataset,
+    max_samples=int(cfg.get("visualization", {}).get("num_samples", 3)),
+    candidates=int(cfg.get("visualization", {}).get("thin_crack_candidates", 80)),
+)
+paper_output = save_paper_style_prediction_grid(
+    model,
+    val_dataset,
+    DEVICE,
+    output_dir,
+    indices=thin_indices,
+    threshold=float(cfg.get("visualization", {}).get("threshold", 0.5)),
+)
+print(f"Paper-style results saved: {paper_output}")
+print(f"Selected thin-crack validation samples: {thin_indices}")

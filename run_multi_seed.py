@@ -86,6 +86,8 @@ def main():
         run_result = {
             "seed": seed,
             "epoch": int(checkpoint.get("epoch", -1)),
+            "val_loss": float(checkpoint.get("val_loss", 0.0)),
+            "val_accuracy": float(checkpoint.get("val_accuracy", 0.0)),
             "val_dice": float(checkpoint.get("val_dice", 0.0)),
             "val_iou": float(checkpoint.get("val_iou", 0.0)),
             "val_precision": float(checkpoint.get("val_precision", 0.0)),
@@ -94,8 +96,12 @@ def main():
             "train_loss": float(checkpoint.get("train_loss", 0.0)),
             "checkpoint": seed_checkpoint_path,
             "figures": {
-                "comprehensive": os.path.join(seed_results_dir, "comprehensive_detection.png"),
-                "zoomed": os.path.join(seed_results_dir, "zoomed_detection.png"),
+                "paper_style": os.path.join(seed_results_dir, "paper_style_predictions.png"),
+                "training_curves": os.path.join(seed_results_dir, "training_curves.png"),
+            },
+            "history": {
+                "csv": os.path.join(seed_results_dir, "training_history.csv"),
+                "yaml": os.path.join(seed_results_dir, "training_history.yaml"),
             },
         }
         run_results.append(run_result)
@@ -104,6 +110,8 @@ def main():
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "seed": run_result["seed"],
             "epoch": run_result["epoch"],
+            "val_loss": run_result["val_loss"],
+            "val_accuracy": run_result["val_accuracy"],
             "val_dice": run_result["val_dice"],
             "val_iou": run_result["val_iou"],
             "val_precision": run_result["val_precision"],
@@ -112,14 +120,19 @@ def main():
             "train_loss": run_result["train_loss"],
             "checkpoint": run_result["checkpoint"],
             "figures": run_result["figures"],
+            "history": run_result["history"],
         }
         write_yaml(os.path.join(reports_dir, f"seed_{seed}.yaml"), per_seed_report)
 
         print(
-            f"  Done | Dice={run_result['val_dice']:.4f} "
+            f"  Done | Acc={run_result['val_accuracy']:.4f} "
+            f"Loss={run_result['val_loss']:.4f} "
+            f"Dice={run_result['val_dice']:.4f} "
             f"IoU={run_result['val_iou']:.4f} Epoch={run_result['epoch']}"
         )
 
+    loss_scores = np.array([item["val_loss"] for item in run_results], dtype=np.float64)
+    accuracy_scores = np.array([item["val_accuracy"] for item in run_results], dtype=np.float64)
     dice_scores = np.array([item["val_dice"] for item in run_results], dtype=np.float64)
     iou_scores = np.array([item["val_iou"] for item in run_results], dtype=np.float64)
     precision_scores = np.array([item["val_precision"] for item in run_results], dtype=np.float64)
@@ -134,6 +147,10 @@ def main():
         "seeds": seeds,
         "runs": run_results,
         "aggregate": {
+            "loss_mean": float(loss_scores.mean()),
+            "loss_std": float(loss_scores.std(ddof=0)),
+            "accuracy_mean": float(accuracy_scores.mean()),
+            "accuracy_std": float(accuracy_scores.std(ddof=0)),
             "dice_mean": float(dice_scores.mean()),
             "dice_std": float(dice_scores.std(ddof=0)),
             "iou_mean": float(iou_scores.mean()),
@@ -147,6 +164,8 @@ def main():
         },
         "best_by_dice": {
             "seed": int(best_run["seed"]),
+            "val_loss": float(best_run["val_loss"]),
+            "val_accuracy": float(best_run["val_accuracy"]),
             "val_dice": float(best_run["val_dice"]),
             "val_iou": float(best_run["val_iou"]),
             "val_precision": float(best_run["val_precision"]),
@@ -162,6 +181,10 @@ def main():
     aggregate_report = {
         "created_at": summary["created_at"],
         "seeds": seeds,
+        "loss_mean": summary["aggregate"]["loss_mean"],
+        "loss_std": summary["aggregate"]["loss_std"],
+        "accuracy_mean": summary["aggregate"]["accuracy_mean"],
+        "accuracy_std": summary["aggregate"]["accuracy_std"],
         "dice_mean": summary["aggregate"]["dice_mean"],
         "dice_std": summary["aggregate"]["dice_std"],
         "iou_mean": summary["aggregate"]["iou_mean"],
@@ -181,6 +204,8 @@ def main():
     print("\n" + "=" * 70)
     print("MULTI-SEED SUMMARY")
     print("=" * 70)
+    print(f"Loss: {summary['aggregate']['loss_mean']:.4f} +/- {summary['aggregate']['loss_std']:.4f}")
+    print(f"Acc : {summary['aggregate']['accuracy_mean']:.4f} +/- {summary['aggregate']['accuracy_std']:.4f}")
     print(f"Dice: {summary['aggregate']['dice_mean']:.4f} +/- {summary['aggregate']['dice_std']:.4f}")
     print(f"IoU : {summary['aggregate']['iou_mean']:.4f} +/- {summary['aggregate']['iou_std']:.4f}")
     print(f"Prec: {summary['aggregate']['precision_mean']:.4f} +/- {summary['aggregate']['precision_std']:.4f}")

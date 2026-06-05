@@ -9,11 +9,12 @@ class ChannelAttention(nn.Module):
         super().__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.max_pool = nn.AdaptiveMaxPool2d(1)
+        hidden_channels = max(1, in_channels // reduction)
         
         self.fc = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels // reduction, 1, bias=False),
+            nn.Conv2d(in_channels, hidden_channels, 1, bias=False),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels // reduction, in_channels, 1, bias=False)
+            nn.Conv2d(hidden_channels, in_channels, 1, bias=False)
         )
         self.sigmoid = nn.Sigmoid()
     
